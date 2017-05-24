@@ -1,0 +1,12 @@
+---
+
+mysql_dbs:
+  - {"name": "db1"}
+  - {"name": "db2"}
+
+mysql_users:
+  - {"name": "user1", "pass": "User1paSS@987", priv: "db1.*:ALL/db2.*:ALL"}
+
+mysql_repl_user:
+  - {"name": "repl", "pass": "ReplUserpaSS@654"}
+

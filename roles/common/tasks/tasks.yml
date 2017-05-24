@@ -1,0 +1,105 @@
+---
+
+#- name: install libselinux-python
+#  yum: name=libselinux-python state=installed
+
+- name: disable iptables service
+  service: name=iptables state=stopped enabled=no
+  failed_when: False
+
+- name: disable firewalld service
+  service: name=firewalld state=stopped enabled=no
+  failed_when: False
+
+#- name: disable selinux
+#  selinux: state=disabled
+#  ignore_errors: True
+
+- name: remove require tty
+  lineinfile: regexp="^\w+\s+requiretty" dest=/etc/sudoers state=absent
+
+- name: remove useless cron
+  file: dest=/etc/cron.daily/{{ item }} state=absent
+  with_items:
+    - makewhatis.cron
+    - mlocate.cron
+
+- name: check /data mount point
+  command: mountpoint -q /data
+  register: volume_stat
+  failed_when: volume_stat.rc != 0
+  changed_when: False
+
+- name: check if ntpd service exists
+  stat: path=/usr/sbin/ntpd
+  register: ntpd_service_status
+  tags: ntp
+
+- name: stop ntpd service
+  service: name=ntpd enabled=no state=stopped
+  when: ntpd_service_status.stat.exists
+  tags: ntp
+
+- name: install ntpdate and other basic packages
+  yum: name={{ item }} state=installed
+  with_items:
+    - ntpdate
+    - chrony
+  tags: ntp
+
+- name: enable ntpdate service
+  service: name=ntpdate enabled=yes
+  tags: ntp
+
+- name: configure sysctl
+  sysctl: name={{ item["name"] }} value={{ item["value"] }} sysctl_set=yes state=present reload=yes ignoreerrors=yes
+  with_items:
+    - {"name":"kernel.shmmni", "value":"4096"}
+    - {"name":"kernel.sem", "value":"2500 512000 100 2048"}
+    - {"name":"kernel.sysrq", "value":"1"}
+    - {"name":"kernel.msgmnb", "value":"65536"}
+    - {"name":"kernel.msgmax", "value":"65536"}
+    - {"name":"kernel.msgmni", "value":"2048"}
+    - {"name":"net.ipv4.tcp_syncookies", "value":"1"}
+    - {"name":"net.ipv4.ip_forward", "value":"0"}
+    - {"name":"net.ipv4.conf.default.accept_source_route", "value":"0"}
+    - {"name":"net.ipv4.tcp_tw_recycle", "value":"1"}
+    - {"name":"net.ipv4.tcp_max_syn_backlog", "value":"4096"}
+    - {"name":"net.ipv4.conf.all.arp_filter", "value":"1"}
+    - {"name":"net.ipv4.ip_local_port_range", "value":"1025 65535"}
+    - {"name":"net.core.netdev_max_backlog", "value":"10000"}
+    - {"name":"net.core.rmem_max", "value":"2097152"}
+    - {"name":"net.core.wmem_max", "value":"2097152"}
+    - {"name":"vm.overcommit_memory", "value":"0"}
+    - {"name":"kernel.core_pattern", "value":"core"}
+    - {"name":"kernel.core_pipe_limit", "value":"0"}
+    - {"name":"kernel.core_uses_pid", "value":"1"}
+    - {"name":"fs.file-max", "value":"65536"}
+    - {"name":"vm.min_free_kbytes", "value":"90112"}
+    - {"name":"vm.dirty_ratio", "value":"40"}
+  tags: sysctl
+
+- name: configure limits.conf
+  copy: src=limits.conf dest=/etc/security/limits.conf
+  tags: pam_limits
+
+- name: stat nproc.conf
+  stat: path=/etc/security/limits.d/20-nproc.conf
+  register: nprocf
+  tags: pam_limits
+
+- name: configure nproc.conf
+  copy: src=nproc.conf dest=/etc/security/limits.d/20-nproc.conf
+  when:  nprocf.stat.exists
+  tags: pam_limits
+
+- name: configure nproc.conf
+  copy: src=nproc.conf dest=/etc/security/limits.d/90-nproc.conf
+  when:  nprocf.stat.exists == False
+  tags: pam_limits
+
+- name: configure nofile.conf
+  copy: src=nofile.conf dest=/etc/security/limits.d/80-nofile.conf
+  tags: pam_limits
+
+- set_fact: common_role_exists=1

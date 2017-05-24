@@ -1,0 +1,112 @@
+---
+
+- name: Install the mysql packages
+  yum: name={{ item }} state=installed
+  with_items:
+    - mysql-community-server
+    - MySQL-python
+
+- name: Copy the my.cnf file
+  template: src=my.cnf.j2 dest=/etc/my.cnf
+  notify:
+   - restart mysql
+
+- name: create datadir
+  file: dest=/data/mysql state=directory owner=mysql group=mysql
+
+- name: stat mysql data
+  stat: path=/data/mysql/mysql
+  register: myinitlock
+
+- name: init mysql data
+  service: name={{ mysql_service }} state=started
+  when: myinitlock.stat.exists == False
+
+- name: stop mysql service
+  service: name={{ mysql_service }} state=stopped
+  when: myinitlock.stat.exists == False
+
+- name: create tmp init file
+  template: src=init.tmp.j2 dest=/tmp/mysql.init.tmp
+  when: myinitlock.stat.exists == False
+
+- name: update mysql root password
+  shell: (mysqld --init-file=/tmp/mysql.init.tmp >/dev/null 2>&1 &) && sleep 2
+  when: myinitlock.stat.exists == False
+
+- name: Wait for mysql port
+  wait_for:
+    host: localhost
+    port: "{{ mysql_port }}"
+    timeout: 10
+  when: myinitlock.stat.exists == False
+
+- name: stop mysql
+  shell: ps aux|grep mysql|egrep -v 'grep|python|ansible'|awk '{print $2}'|xargs kill -9 && sleep 2
+  when: myinitlock.stat.exists == False
+
+- name: remove tmp init file
+  file: dest=/tmp/mysql.init.tmp state=absent
+
+- name: copy .my.cnf file with root password credentials
+  template: src=client.my.cnf.j2 dest=~/.my.cnf mode=0600
+
+- name: Start the mysql services
+  service: name={{ mysql_service }} state=started enabled=yes
+
+- name: Create the databases
+  mysql_db: name={{ item.name }} state=present
+  with_items: "{{ mysql_dbs }}"
+  when: mysql_dbs|lower != 'none'
+
+- name: Create the database users
+  mysql_user: name={{ item.name }}  password={{ item.pass|default("foobar") }}
+                priv={{ item.priv|default("*.*:ALL") }} state=present host={{ item.host | default("%") }}
+  with_items: "{{ mysql_users }}"
+  when: mysql_users|lower != 'none'
+  tags: mysql-user
+
+- name: Create the replication users
+  mysql_user: name={{ item.name }}  host="%" password={{ item.pass|default("foobar") }}
+                priv="*.*:REPLICATION SLAVE" state=present
+  with_items: "{{ mysql_repl_user }}"
+  when: mysql_repl_role == 'master'
+
+- name: Check if slave is already configured for replication
+  mysql_replication: mode=getslave
+  ignore_errors: true
+  register: slave
+  when: mysql_repl_role == 'slave'
+  tags: debug
+
+- name: debug
+  debug: msg={{ slave }}
+  tags: debug
+
+- name: Get the current master servers replication status
+  mysql_replication: mode=getmaster
+  delegate_to: "{{ mysql_repl_master }}"
+  register: repl_stat
+  when: mysql_repl_role == 'slave' and mysql_repl_master is defined and ( slave|failed or slave.Is_Slave == False )
+  tags: debug
+
+- name: Change the master in slave
+  mysql_replication:
+    mode=changemaster
+    master_host={{ mysql_repl_master }}
+    master_log_file={{ repl_stat.File }}
+    master_log_pos={{ repl_stat.Position }}
+    master_user={{ mysql_repl_user[0].name }}
+    master_password={{ mysql_repl_user[0].pass }}
+  when: mysql_repl_role == 'slave' and mysql_repl_master is defined and ( slave|failed or slave.Is_Slave == False )
+
+- name: start the replication
+  mysql_replication:
+    mode=startslave
+    master_host={{ mysql_repl_master }}
+    master_log_file={{ repl_stat.File }}
+    master_log_pos={{ repl_stat.Position }}
+    master_user={{ mysql_repl_user[0].name }}
+    master_password={{ mysql_repl_user[0].pass }}
+  when: mysql_repl_role == 'slave' and mysql_repl_master is defined and ( slave|failed or slave.Is_Slave == False )
+
